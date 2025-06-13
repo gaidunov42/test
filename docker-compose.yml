@@ -1,0 +1,287 @@
+
+
+services:
+
+  auth_service:
+    build:
+      context: ./auth_service
+    container_name: auth_service
+    volumes:
+      - ./auth_service:/app
+      - ./logs:/logs
+    ports:
+      - "4242:4242"
+    depends_on:
+      - db
+      - redis
+    env_file:
+      - ./auth_service/.env
+    networks:
+      - ber
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  catalog:
+    build:
+      context: ./catalog_service
+    container_name: catalog_service
+    volumes:
+      - ./catalog_service:/app
+      - ./logs:/logs
+    ports:
+      - "8001:8001"
+    depends_on:
+      - db
+      - redis
+      - kafka
+    env_file:
+      - ./catalog_service/.env
+    networks:
+      - ber
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  orders_service:
+    build:
+      context: ./orders_service
+    container_name: orders_service
+    volumes:
+      - ./orders_service:/app
+      - ./logs:/logs
+    ports:
+      - "8002:8002"
+    depends_on:
+      - db
+      - kafka
+    env_file:
+      - ./orders_service/.env
+    networks:
+      - ber
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+  deferred_tasks:
+    build:
+      context: ./celery_tasker
+    container_name: celery_tasker
+    volumes:
+      - ./celery_tasker:/app
+      - ./logs:/logs
+    depends_on:
+      - db
+      - kafka
+      - redis
+    env_file:
+      - ./celery_tasker/.env
+    networks:
+      - ber
+
+  db:
+    image: postgres:15
+    container_name: postgres_db
+    restart: always
+    environment:
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: testdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres_init:/docker-entrypoint-initdb.d
+    networks:
+      - ber
+
+  redis:
+    image: redis:6
+    container_name: redis_cache
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server
+      --requirepass my_secure_password
+      --save ""
+      --appendonly no
+    networks:
+      - ber
+
+  reviews:
+    build:
+      context: ./reviews_service
+    container_name: reviews_service
+    volumes:
+      - ./reviews_service:/app
+      - ./uploads/img:/app/img
+      - ./logs:/logs
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongo
+      - kafka
+    env_file:
+      - ./reviews_service/.env
+    networks:
+      - ber
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mongo:
+    image: mongo:latest
+    container_name: mongo_db
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: testuser
+      MONGO_INITDB_ROOT_PASSWORD: testpass
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - ber
+
+  kafka:
+    image: bitnami/kafka:latest
+    container_name: kafka
+    ports:
+      - "9092:9092"  
+      - "9093:9093" 
+    environment:
+      KAFKA_KRAFT_CLUSTER_ID: kraft-cluster-1234567890abcdef1234567890abcdef
+      KAFKA_CFG_NODE_ID: 0
+      KAFKA_CFG_PROCESS_ROLES: broker,controller
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:29093
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_INTERNAL://0.0.0.0:9093,CONTROLLER://:29093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_INTERNAL://kafka:9093
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    networks:
+      - ber
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
+    depends_on:
+      - kafka
+    networks:
+      - ber
+
+  redis-exporter:
+    image: oliver006/redis_exporter
+    container_name: redis-exporter
+    ports:
+      - "9121:9121"
+    environment:
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=my_secure_password 
+    depends_on:
+      - redis
+    networks:
+      - ber
+  
+  kafka-exporter:
+    image: danielqsj/kafka-exporter
+    container_name: kafka-exporter
+    ports:
+      - "9308:9308"
+    environment:
+      - KAFKA_SERVER=kafka:9092
+    depends_on:
+      - kafka
+    networks:
+      - ber
+
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on:
+      - auth_service
+      - catalog
+      - orders_service
+      - reviews
+    networks:
+      - ber
+
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    ports:
+      - "7777:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/dashboards:/etc/grafana/dashboards
+    depends_on:
+      - prometheus
+    networks:
+      - ber
+  
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    ports:
+      - "9200:9200"
+    networks:
+      - ber
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.0
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    networks:
+      - ber
+    depends_on:
+      - elasticsearch
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.13.0
+    volumes:
+      - ./logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+      - ./logs:/mnt/logs
+    depends_on:
+      - elasticsearch
+    networks:
+      - ber
+
+volumes:
+  postgres_data:
+  redis_data:
+  mongo_data:
+  grafana_data:
+
+networks:
+  ber:
+    driver: bridge
